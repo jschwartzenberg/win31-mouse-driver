@@ -40,7 +40,6 @@ externB mouse_flags			;Various flags
 externW enable_proc			;Address of routine to	enable mouse
 externW disable_proc			;Address of routine to disable mouse
 externW IntCS
-externB winos2_mode
 
 sEnd	Data
 page
@@ -99,55 +98,30 @@ I33_PROC_START	equ	$-I33_START	;Delta to this procedure
 
 I33_proc	proc	far
 
+	push	ax
 	mov	ax,_DATA		 ;Need to gain access to our
 	mov	ds,ax			;  data segment
 	assumes ds,Data
-	cmp	bptr winos2_mode,1
-	jne     I33_no_winos2_1
-	push	cx
 	push	dx
-
-I33_no_winos2_1:
-	and	bx,00000011b			;Isolate buttons, set BH = 0
-	mov	dh,bl				;Get and update mouse state
-	xchg	dh,bptr device_int[OLD_STATE]	;1 indicates button down
-	shl	dh,1				;Shift old state
-	shl	dh,1
-	or	bl,dh				;Combine states into index
-
-;	mov	bl,deltas_states[bx]	;Get button delta/states, BH = 0
-	mov	bl,bptr device_int[STATE_XLATE][bx]
-
-	mov	cx,di			;CX = delta Y
-	or	cx,si			;Show motion if any occured
-	neg	cx			;'C' clear only if motion (DI ne 0)
-	adc	bx,bx
-	jnz	I33_got_event
-	cmp	bptr winos2_mode,1
-	jne	I33_no_winos2_2
-	pop	cx
-	pop	bx
-
-I33_no_winos2_2:
-	jmp	I33_nothing_happened
-
-I33_got_event:
-	.errnz	SF_MOVEMENT-00000001b
-
-	mov	ax,CLEAR_COUNTERS	;Clear dX and dY counters			   ;clear dX & dY counters
-	int	MOUSE_SYS_VEC		;BX,SI,DI are preserved
-
-	mov	cx,di			;CX = delta Y
-	xchg	ax,si			;AX = delta X
-	xchg	ax,bx			;AX = status, BX = delta X
+	push	cx
+	mov	ax,26h
+	int	MOUSE_SYS_VEC
+	mov	di,dx
+	mov	ax,0ffffh
+	pop	bx			; X coord
+	mul	bx
+	div	cx
+	mov	si,ax
+	mov	ax,0ffffh
+	pop	bx			; Y coord
+	mul	bx
+	div	di
+	mov	cx,ax
+	mov	bx,si
+	pop	ax
 	mov	dx,NUMBER_BUTTONS
-	cmp	bptr winos2_mode,1
-	jne	I33_no_winos2_3
 	or	ax,8000h
-	pop	cx
-	pop	bx
 
-I33_no_winos2_3:
 	call	event_proc
 
 I33_nothing_happened:
@@ -171,60 +145,6 @@ OLD_INT_33H_PROC equ	$-I33_START	;Delta to this byte
 ;	old_status contains the state of the mouse the last time we
 ;	were called to process an interrupt.
 
-OLD_STATE	equ	$-I33_START	;Delta to this byte
-		db	0		;Old status will go here
-
-dummy		equ	$-I33_START
-		db	0
-
-page
-
-;-----------------------------------------------------------------------;
-; state_xlate
-;
-;	state_xlate is used to translate the current and previous
-;	button state information into the values required by
-;	Windows.  It is indexed as follows:
-;
-;	    pB2 pB1 cB2 cB1
-;
-;	     |	 |   |	 |
-;	     |	 |   |	  --- 1 if button 1 is	down, 0 if button 1 is	up
-;	     |	 |   |
-;	     |	 |    ------- 1 if button 2 is	down, 0 if button 2 is	up
-;	     |	 |
-;	     |	  ----------- 1 if button 1 was down, 0 if button 1 was up
-;	     |
-;	      --------------- 1 if button 2 was down, 0 if button 2 was up
-;
-;	This table must be copied to the data segment along with the
-;	interrupt handler.
-;
-;-----------------------------------------------------------------------;
-
-STATE_XLATE	equ	$-I33_START	;delta to this table
-
-	db	0			shr 1
-	db	(SF_B1_DOWN)		shr 1
-	db	(SF_B2_DOWN)		shr 1
-	db	(SF_B1_DOWN+SF_B2_DOWN) shr 1
-
-	db	(SF_B1_UP)		shr 1
-	db	0			shr 1
-	db	(SF_B1_UP+SF_B2_DOWN)	shr 1
-	db	(SF_B2_DOWN)		shr 1
-
-	db	(SF_B2_UP)		shr 1
-	db	(SF_B1_DOWN+SF_B2_UP)	shr 1
-	db	0			shr 1
-	db	(SF_B1_DOWN)		shr 1
-
-	db	(SF_B1_UP+SF_B2_UP)	shr 1
-	db	(SF_B2_UP)		shr 1
-	db	(SF_B1_UP)		shr 1
-	db	0			shr 1
-
-	.errnz	NUMBER_BUTTONS-2	;Won't work unless a two button mouse
 page
 
 I33_INT_LENGTH	= $-I33_START		;Length of code to copy
@@ -265,10 +185,6 @@ page
 
 I33_enable	proc	near
 
-	mov	bptr device_int[OLD_STATE],0
-
-;	push	ds			;ES:DX --> interrupt procedure
-;	pop	es
 	mov	es,IntCS
 	assumes es,Data
 
@@ -371,56 +287,8 @@ I33_init	proc	near
 	mov	disable_proc,CodeOFFSET I33_disable
 	mov	si,CodeOFFSET I33_START
 	mov	cx,I33_INT_LENGTH
-	call	I33_init_winos2
 	ret
 I33_init	endp
-
-;---------------------------Public-Routine------------------------------;
-; I33_init_winos2 - Initialize the WinOS/2 mode
-;
-;
-; Entry:
-;	None
-; Returns:
-;	None
-; Error Returns:
-;	None
-; History:
-;	unknown, copied from the IBM WinOS/2 driver
-;	Initial version
-;-----------------------------------------------------------------------;
-
-;------------------------------Pseudo-Code------------------------------;
-; {
-; }
-;-----------------------------------------------------------------------;
-
-	assumes cs,Code
-	assumes ds,Data
-
-I33_init_winos2	proc	near
-
-	pushf
-	push	ax
-	push	si
-	push	bx
-	mov	ah,80h
-	lea	si,device_int[dummy]
-	clc
-	int     66h
-	jb	I33_no_winos2_4
-	cmp	ax,0
-	jne	I33_no_winos2_4
-	mov	bptr winos2_mode,1
-
-I33_no_winos2_4:
-	pop	bx
-	pop	si
-	pop	ax
-	popf
-	ret
-
-I33_init_winos2	endp
 
 sEnd	Code
 end
